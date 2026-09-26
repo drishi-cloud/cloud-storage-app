@@ -49,3 +49,9 @@ class FileResponse(BaseModel):
     
     class Config:
         from_attributes=True
+        
+class FileRename(BaseModel):
+    filename: str
+    
+class FileMove(BaseModel):
+    folder_id: Optional[int]=None

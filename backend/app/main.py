@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.core.database import engine,Base
 from app.models import user, folder, file
-from app.routes import auth,files
+from app.routes import auth,files,folders
 from app.core.supabase_client import supabase, SUPABASE_BUCKET_NAME
 
 Base.metadata.create_all(bind=engine)
@@ -10,6 +10,7 @@ app=FastAPI()
 
 app.include_router(auth.router)
 app.include_router(files.router)
+app.include_router(folders.router)
 
 @app.get("/")
 def read_root():
