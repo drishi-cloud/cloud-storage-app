@@ -55,3 +55,12 @@ class FileRename(BaseModel):
     
 class FileMove(BaseModel):
     folder_id: Optional[int]=None
+    
+class FileSearchResult(BaseModel):
+    id: int
+    filename: str
+    file_type: str
+    file_size: int
+    folder_id: Optional[int]
+    owner_email: str
+    created_at: str

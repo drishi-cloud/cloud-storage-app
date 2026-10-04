@@ -7,9 +7,10 @@ from app.core.permissions import get_folder_access_level, has_at_least, AccessLe
 from app.models.user import User
 from app.models.folder import Folder
 from app.models.file import File
+from app.core.supabase_client import supabase, SUPABASE_BUCKET_NAME
 from app.schemas.folder import (
     FolderCreate, FolderResponse, FolderContentsResponse,
-    BreadcrumbItem, BreadcrumbResponse, FolderRename, FolderMove
+    BreadcrumbItem, BreadcrumbResponse, FolderRename, FolderMove, TrashResponse, TrashResponse
 )
 from app.schemas.file import FileResponse
 
@@ -143,7 +144,7 @@ def move_folder(
     if not folder:
         raise HTTPException(status_code=404, detail="Folder not found")
 
-    # Moving is Owner-only - reorganizing someone else's folder tree is too risky for Editors
+    
     access = get_folder_access_level(folder, current_user.id, db)
     if not has_at_least(access, AccessLevel.owner):
         raise HTTPException(status_code=404, detail="Folder not found")
@@ -203,3 +204,141 @@ def _cascade_delete_folder(folder_id: int, owner_id: int, db: Session):
     subfolders = db.query(Folder).filter(Folder.parent_id == folder_id, Folder.owner_id == owner_id).all()
     for sub in subfolders:
         _cascade_delete_folder(sub.id, owner_id, db)
+        
+@router.get("/trash", response_model=TrashResponse)
+def get_trash(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    deleted_folders = db.query(Folder).filter(
+        Folder.owner_id == current_user.id,
+        Folder.is_deleted == True
+    ).all()
+
+    deleted_files = db.query(File).filter(
+        File.owner_id == current_user.id,
+        File.is_deleted == True
+    ).all()
+
+    return TrashResponse(
+        folders=[_folder_response(f) for f in deleted_folders],
+        files=[
+            FileResponse(id=f.id, filename=f.filename, file_type=f.file_type,
+                          file_size=f.file_size, folder_id=f.folder_id, created_at=str(f.created_at))
+            for f in deleted_files
+        ]
+    )
+    
+@router.patch("/{folder_id}/restore", response_model=FolderResponse)
+def restore_folder(
+    folder_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    folder = db.query(Folder).filter(
+        Folder.id == folder_id,
+        Folder.owner_id == current_user.id,
+        Folder.is_deleted == True
+    ).first()
+
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found in trash")
+
+    if folder.parent_id is not None:
+        parent_folder = db.query(Folder).filter(Folder.id == folder.parent_id).first()
+        if not parent_folder or parent_folder.is_deleted:
+            folder.parent_id = None
+
+    
+    _cascade_restore_folder(folder_id, current_user.id, db)
+
+    db.commit()
+    db.refresh(folder)
+
+    return _folder_response(folder)
+
+
+def _cascade_restore_folder(folder_id: int, owner_id: int, db: Session):
+
+    folder = db.query(Folder).filter(Folder.id == folder_id).first()
+    folder.is_deleted = False
+
+    files_inside = db.query(File).filter(
+        File.folder_id == folder_id,
+        File.owner_id == owner_id
+    ).all()
+    for f in files_inside:
+        f.is_deleted = False
+
+    subfolders = db.query(Folder).filter(
+        Folder.parent_id == folder_id,
+        Folder.owner_id == owner_id
+    ).all()
+    for sub in subfolders:
+        _cascade_restore_folder(sub.id, owner_id, db)
+        
+@router.delete("/{folder_id}/permanent")
+def permanently_delete_folder(
+    folder_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    folder = db.query(Folder).filter(
+        Folder.id == folder_id,
+        Folder.owner_id == current_user.id,
+        Folder.is_deleted == True
+    ).first()
+
+    if not folder:
+        raise HTTPException(status_code=404, detail="Folder not found in trash")
+
+    storage_keys_to_delete = []
+    _collect_storage_keys(folder_id, current_user.id, db, storage_keys_to_delete)
+
+    if storage_keys_to_delete:
+        try:
+            supabase.storage.from_(SUPABASE_BUCKET_NAME).remove(storage_keys_to_delete)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not delete files from storage: {str(e)}")
+    try:
+        _cascade_permanent_delete_folder(folder_id, current_user.id, db)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Files were removed from storage but database cleanup failed: {str(e)}"
+        )
+
+    return {"message": "Folder permanently deleted", "id": folder_id}
+
+
+def _collect_storage_keys(folder_id: int, owner_id: int, db: Session, collected: list):
+    files_inside = db.query(File).filter(
+        File.folder_id == folder_id, File.owner_id == owner_id
+    ).all()
+    for f in files_inside:
+        collected.append(f.storage_key)
+
+    subfolders = db.query(Folder).filter(
+        Folder.parent_id == folder_id, Folder.owner_id == owner_id
+    ).all()
+    for sub in subfolders:
+        _collect_storage_keys(sub.id, owner_id, db, collected)
+
+
+def _cascade_permanent_delete_folder(folder_id: int, owner_id: int, db: Session):
+    files_inside = db.query(File).filter(
+        File.folder_id == folder_id, File.owner_id == owner_id
+    ).all()
+    for f in files_inside:
+        db.delete(f)
+
+    subfolders = db.query(Folder).filter(
+        Folder.parent_id == folder_id, Folder.owner_id == owner_id
+    ).all()
+    for sub in subfolders:
+        _cascade_permanent_delete_folder(sub.id, owner_id, db)
+
+    folder = db.query(Folder).filter(Folder.id == folder_id).first()
+    db.delete(folder)

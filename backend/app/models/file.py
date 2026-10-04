@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Boolean
+from sqlalchemy import Column, Integer, String, BigInteger, DateTime, ForeignKey, Boolean, Index
 from sqlalchemy.sql import func
 from app.core.database import Base
 
@@ -16,4 +16,9 @@ class File(Base):
     
     is_deleted=Column(Boolean, default=False)
     created_at=Column(DateTime(timezone=True),server_default=func.now())
+    
+    __table_args__=(
+        Index("ix_files_owner_deleted","owner_id","is_deleted"),
+        Index("ix_files_folder_deleted","folder_id","is_deleted")
+    )
     

@@ -31,4 +31,8 @@ class FolderRename(BaseModel):
     
 class FolderMove(BaseModel):
     parent_id: Optional[int]=None
+    
+class TrashResponse(BaseModel):
+    folders: list[FolderResponse]
+    files: list[FileResponse]
         
